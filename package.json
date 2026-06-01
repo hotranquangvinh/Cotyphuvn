@@ -1,0 +1,12 @@
+{
+  "name": "co-ty-phu-viet-nam",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multiplayer Monopoly-style board game inspired by Business Tour, using Vietnamese landmarks.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

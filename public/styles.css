@@ -628,6 +628,118 @@ h1 {
   80% { transform: rotate(-8deg) translate(-3px, -2px); }
 }
 
+.starting-picker {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  gap: 18px;
+  padding: 24px;
+  background: rgba(246, 249, 246, 0.78);
+  backdrop-filter: blur(10px);
+  animation: pickerFade 3.55s ease both;
+}
+
+.starting-wheel {
+  position: relative;
+  width: min(320px, 72vw);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, rgba(255, 255, 255, 0.98) 0 34%, transparent 35%),
+    conic-gradient(from 0deg, #49bf8f, #d8ad2b, #ef6f6c, #58c3a4, #49bf8f);
+  border: 10px solid rgba(255, 255, 255, 0.92);
+  box-shadow: 0 28px 70px rgba(37, 49, 68, 0.2);
+  animation: startingSpin 3.15s cubic-bezier(0.14, 0.72, 0.12, 1) both;
+}
+
+.starting-wheel::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -18px;
+  width: 0;
+  height: 0;
+  transform: translateX(-50%);
+  border-left: 15px solid transparent;
+  border-right: 15px solid transparent;
+  border-top: 28px solid var(--ink);
+  filter: drop-shadow(0 4px 5px rgba(37, 49, 68, 0.24));
+}
+
+.starting-wheel-item {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  width: 56px;
+  height: 56px;
+  margin: -28px;
+  display: grid;
+  place-items: center;
+  transform: rotate(var(--angle)) translateY(-122px) rotate(var(--reverse-angle));
+}
+
+.starting-wheel-item span,
+.starting-wheel-core span {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: var(--player);
+  color: white;
+  font-size: 1.35rem;
+  box-shadow: 0 10px 18px rgba(37, 49, 68, 0.22);
+}
+
+.starting-wheel-item.selected span {
+  outline: 4px solid rgba(255, 255, 255, 0.9);
+}
+
+.starting-wheel-core {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
+
+.starting-wheel-core span {
+  width: 76px;
+  height: 76px;
+  font-size: 1.9rem;
+}
+
+.starting-result {
+  width: min(380px, 92vw);
+  padding: 14px 16px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  text-align: center;
+  box-shadow: 0 18px 38px rgba(37, 49, 68, 0.14);
+}
+
+.starting-result h2 {
+  margin: 2px 0 6px;
+  font-size: 1.8rem;
+}
+
+.starting-result p:last-child {
+  margin: 0;
+  color: var(--muted);
+  font-weight: 750;
+}
+
+@keyframes startingSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(calc(1440deg + var(--selected-angle))); }
+}
+
+@keyframes pickerFade {
+  0%, 84% { opacity: 1; }
+  100% { opacity: 0; pointer-events: none; }
+}
+
 .tile {
   position: relative;
   display: grid;
@@ -794,6 +906,9 @@ h1 {
   color: white;
   font-size: 0.84rem;
   box-shadow: 0 2px 5px rgba(20, 26, 36, 0.25);
+}
+
+.piece.moving {
   animation: pieceHop 0.16s ease;
 }
 

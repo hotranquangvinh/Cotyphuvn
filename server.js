@@ -7,7 +7,8 @@ const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_DIR = path.join(__dirname, "public");
 const START_CASH = 3200;
 const PASS_START_BONUS = 300;
-const TAX_AMOUNT = 180;
+const TAX_AMOUNT = 80;
+const TAX_PER_BUILD_LEVEL = 60;
 const MAX_LOGS = 80;
 
 const rooms = new Map();
@@ -52,7 +53,7 @@ const boardTemplate = [
   land(33, "Vịnh Hạ Long", "Quảng Ninh", 480, 96, "lime"),
   beach(34, "Bãi biển Cát Bà", "Hải Phòng", 200),
   land(35, "Mộc Châu", "Sơn La", 540, 108, "teal"),
-  special(36, "Đóng thuế", "tax", `Mỗi người trừ ${TAX_AMOUNT} tr`),
+  special(36, "Đóng thuế", "tax", "Thuế theo số nhà đang sở hữu"),
   land(37, "Sa Pa", "Lào Cai", 580, 116, "teal"),
   land(38, "Fansipan", "Lào Cai", 600, 120, "teal"),
   land(39, "Lũng Cú", "Hà Giang", 620, 124, "teal")
@@ -194,7 +195,8 @@ function createRoom({ mode, name, roomCode, token, sessionId }) {
     board: cloneBoard(),
     deck: shuffle(chanceCards.map((card, index) => ({ ...card, id: index }))),
     discard: [],
-    festivals: []
+    festivals: [],
+    startingPicker: null
   };
   addLog(room, `${player.name} đã tạo phòng ${code}.`);
   rooms.set(code, room);
@@ -216,7 +218,8 @@ function makePlayer({ name, token, sessionId, host = false }) {
     bankrupt: false,
     connected: true,
     host
-  };
+  ,
+    laps: 0};
 }
 
 function normalizeCode(code) {
@@ -293,6 +296,7 @@ function serialize(room, sessionId) {
       bankrupt: player.bankrupt,
       host: player.id === room.hostId,
       connected: player.connected,
+      laps: player.laps || 0,
       properties: ownedTileIds(room, player.id)
     })),
     ownership: ownership(room),
@@ -305,8 +309,18 @@ function serialize(room, sessionId) {
     notice: room.notice,
     offers: room.offers,
     festivals: room.festivals,
-    round: room.round
+    round: room.round,
+    startingPicker: activeStartingPicker(room)
   };
+}
+
+function activeStartingPicker(room) {
+  if (!room.startingPicker || Date.now() >= room.startingPicker.until) return null;
+  return room.startingPicker;
+}
+
+function startingPickerActive(room) {
+  return Boolean(activeStartingPicker(room));
 }
 
 function ownership(room) {
@@ -396,6 +410,11 @@ function handleAction(room, sessionId, type, payload = {}) {
     error.status = 400;
     throw error;
   }
+  if (startingPickerActive(room) && ["roll", "buy", "build", "travel", "festival", "confirmChance", "endTurn"].includes(type)) {
+    const error = new Error("Đang chọn người đi trước, chờ vòng quay kết thúc.");
+    error.status = 400;
+    throw error;
+  }
 
   switch (type) {
     case "roll":
@@ -442,7 +461,15 @@ function startGame(room, player) {
   }
   if (room.phase === "playing") return;
   room.phase = "playing";
-  room.currentPlayerIndex = 0;
+  room.currentPlayerIndex = Math.floor(Math.random() * room.players.length);
+  const firstPlayer = room.players[room.currentPlayerIndex];
+  const now = Date.now();
+  room.startingPicker = {
+    playerId: firstPlayer.id,
+    playerIds: room.players.map(item => item.id),
+    at: now,
+    until: now + 3600
+  };
   const colors = shuffle(playerColors);
   room.players.forEach((item, index) => {
     item.position = 0;
@@ -450,6 +477,7 @@ function startGame(room, player) {
     item.bankrupt = false;
     item.inJail = false;
     item.skippedTurns = 0;
+    item.laps = 0;
     item.host = item.id === room.hostId;
     item.color = colors[index % colors.length];
   });
@@ -463,6 +491,9 @@ function startGame(room, player) {
   room.pending = null;
   room.notice = null;
   room.rolledThisTurn = false;
+  room.passesThisRound = 0;
+  room.round = 1;
+  addLog(room, `${firstPlayer.name} được chọn đi trước.`);
   addLog(room, `Ván bắt đầu với ${room.players.length} người chơi.`);
   touch(room);
 }
@@ -496,6 +527,7 @@ function rollDice(room, player) {
     } else {
       setNotice(room, "jail", player, "Bạn là tù nhân", "Cần thảy 2 xúc xắc giống nhau để ra tù.", "⛓");
       addLog(room, `${player.name} chưa đổ đôi nên vẫn ở tù.`);
+      advanceTurn(room, { preserveNotice: true });
     }
   } else {
     movePlayer(room, player, d1 + d2);
@@ -509,6 +541,7 @@ function movePlayer(room, player, steps) {
   let next = (previous + steps) % room.board.length;
   if (steps > 0 && previous + steps >= room.board.length) {
     player.cash += PASS_START_BONUS;
+    player.laps = (player.laps || 0) + 1;
     room.passesThisRound += 1;
     addLog(room, `${player.name} đi qua Bắt đầu và nhận ${PASS_START_BONUS} tr.`);
     if (room.passesThisRound >= room.players.length) {
@@ -530,12 +563,15 @@ function resolveTile(room, player, tile) {
     player.inJail = true;
     setNotice(room, "jail", player, "Bạn là tù nhân", "Cần thảy 2 xúc xắc giống nhau để ra tù.", "⛓");
     addLog(room, `${player.name} vào tù. Lượt sau phải đổ đôi để ra.`);
+    advanceTurn(room, { preserveNotice: true });
     return;
   }
   if (tile.type === "tax") {
-    setNotice(room, "tax", player, "Đóng thuế", "Tất cả người chơi cùng bị trừ tiền thuế.", "₫");
-    for (const item of room.players) item.cash -= TAX_AMOUNT;
-    addLog(room, `Tất cả người chơi đóng thuế ${TAX_AMOUNT} tr.`);
+    const amount = propertyTaxForPlayer(room, player);
+    player.cash -= amount;
+    setNotice(room, "tax", player, "Đóng thuế", `${player.name} trả ${amount} tr thuế theo số nhà đang sở hữu.`, "₫");
+    addLog(room, `${player.name} đóng thuế ${amount} tr theo số nhà đang sở hữu.`);
+    advanceTurn(room, { preserveNotice: true });
     return;
   }
   if (room.resolvingChance && tile.type === "chance") {
@@ -610,7 +646,7 @@ function confirmChance(room, player) {
   });
   delete room.chanceMovement;
   addLog(room, outcome);
-  if (!room.pending) {
+  if (!room.pending && currentPlayer(room)?.id === player.id && !shouldPauseForLandingAction(room, player)) {
     advanceTurn(room, { preserveNotice: true });
   }
   touch(room);
@@ -837,6 +873,37 @@ function isOwnable(tile) {
   return ["land", "beach", "utility"].includes(tile.type);
 }
 
+function canBuildLevel(player, targetLevel) {
+  if (targetLevel >= 3 && (player.laps || 0) < 1) return false;
+  return true;
+}
+
+function buildTargetsForPlayer(player, currentLevel, hotelReady = false) {
+  return [1, 2, 3, 4].filter(target => {
+    if (target <= currentLevel) return false;
+    if (!canBuildLevel(player, target)) return false;
+    if (target === 4) return currentLevel >= 3 && hotelReady;
+    return true;
+  });
+}
+
+function shouldPauseForLandingAction(room, player) {
+  const tile = room.board[player.position];
+  if (!tile || !isOwnable(tile)) return false;
+  if (tile.ownerId && tile.ownerId !== player.id) return false;
+  if (tile.type === "beach" || tile.type === "utility") return !tile.ownerId;
+  if (tile.type !== "land") return false;
+  const level = tile.level || 0;
+  if (!tile.ownerId) return true;
+  return buildTargetsForPlayer(player, level, Boolean(tile.hotelReady)).length > 0;
+}
+
+function propertyTaxForPlayer(room, player) {
+  const buildLevels = playerProperties(room, player.id)
+    .filter(tile => tile.type === "land")
+    .reduce((sum, tile) => sum + (tile.level || 0), 0);
+  return TAX_AMOUNT + buildLevels * TAX_PER_BUILD_LEVEL;
+}
 function buyTile(room, player) {
   const tile = room.board[player.position];
   if (!isOwnable(tile)) throwAction("Ô này không thể mua.");
@@ -859,6 +926,7 @@ function buildOnTile(room, player, targetLevel) {
   if (![1, 2, 3, 4].includes(targetLevel) || targetLevel <= current) {
     throwAction("Cấp xây dựng không hợp lệ.");
   }
+  if (!canBuildLevel(player, targetLevel)) throwAction("Cần đi hết 1 vòng trước khi mua/xây nhà lớn.");
   if (buyingLand && targetLevel === 4) throwAction("Cần nhà lớn lv3 trước khi nâng thành khách sạn.");
   if (targetLevel === 4 && current < 3) throwAction("Cần nhà lớn lv3 trước khi nâng thành khách sạn.");
   if (targetLevel === 4 && !tile.hotelReady) throwAction("Bạn cần quay lại ô đã có nhà lớn lv3 để xây khách sạn.");

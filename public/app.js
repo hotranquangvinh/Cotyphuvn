@@ -34,6 +34,7 @@ const state = {
   closingRoom: false,
   displayPositions: {},
   moveTimers: {},
+  movingPieces: {},
   turnNotice: null,
   chanceCardReveals: {},
   chanceCardAnimated: {},
@@ -45,6 +46,7 @@ const state = {
   deferredMoneyBursts: {},
   lastCurrentPlayerId: null,
   noticeTimer: null,
+  startingPickerTimer: null,
   purchaseSelection: null,
   sellPromptTileId: null
 };
@@ -375,6 +377,7 @@ async function confirmSellProperty() {
 function applyRoomUpdate(nextRoom) {
   const previousRoom = state.room;
   scheduleTurnNotice(previousRoom, nextRoom);
+  scheduleStartingPickerEnd(nextRoom);
   trackCashChanges(previousRoom, nextRoom);
   preparePieceMovement(previousRoom, nextRoom);
   state.room = nextRoom;
@@ -388,6 +391,16 @@ function applyRoomUpdate(nextRoom) {
   if (!you || nextRoom.currentPlayerId !== you.id || !sellOwnership || sellOwnership.ownerId !== you.id || nextRoom.pending) {
     state.sellPromptTileId = null;
   }
+}
+
+function scheduleStartingPickerEnd(room) {
+  window.clearTimeout(state.startingPickerTimer);
+  const until = room?.startingPicker?.until;
+  if (!until) return;
+  const delay = Math.max(0, until - Date.now()) + 40;
+  state.startingPickerTimer = window.setTimeout(() => {
+    if (state.room?.phase === "playing") renderGame();
+  }, delay);
 }
 
 function scheduleTurnNotice(previousRoom, nextRoom) {
@@ -584,14 +597,16 @@ function buildMovePath(from, to, boardLength, direction = 1) {
 
 function animatePiece(playerId, segments) {
   window.clearTimeout(state.moveTimers[playerId]);
+  state.movingPieces[playerId] = true;
   const queue = Array.isArray(segments?.[0]?.path) ? segments : [{ path: segments, delay: 300 }];
   let segmentIndex = 0;
   let stepIndex = 0;
   const step = () => {
     const segment = queue[segmentIndex];
     if (!segment) {
+      delete state.movingPieces[playerId];
       const released = releasePendingMoneyBurst(playerId);
-      if (released && state.room?.phase === "playing") renderGame();
+      if (state.room?.phase === "playing") renderGame();
       return;
     }
     if (stepIndex >= segment.path.length) {
@@ -613,6 +628,7 @@ function renderGame() {
   const room = state.room;
   const current = room.players.find(player => player.id === room.currentPlayerId);
   const you = room.players.find(player => player.id === room.youId);
+  const startingPicker = activeStartingPicker(room);
   const huds = arrangeHuds(room.players, room.youId);
   const purchase = purchasePanelState(room, you, current);
   const sell = sellPanelState(room, you, current);
@@ -660,9 +676,11 @@ function renderGame() {
         </div>
       </div>
 
+      ${startingPicker ? renderStartingPicker(room, startingPicker) : ""}
     </section>
   `;
 
+  if (startingPicker) app.querySelector("[data-roll]")?.setAttribute("disabled", "");
   app.querySelector("[data-roll]")?.addEventListener("click", () => action("roll"));
   app.querySelector("[data-confirm-chance]")?.addEventListener("click", () => action("confirmChance"));
   app.querySelector("[data-lobby]")?.addEventListener("click", () => leaveCurrentRoom());
@@ -682,6 +700,38 @@ function renderGame() {
     });
   });
   bindActionControls(room, you);
+}
+
+function activeStartingPicker(room) {
+  return room?.startingPicker && Date.now() < room.startingPicker.until ? room.startingPicker : null;
+}
+
+function renderStartingPicker(room, picker) {
+  const playerIds = picker.playerIds?.length ? picker.playerIds : room.players.map(player => player.id);
+  const orderedPlayers = playerIds.map(playerId => room.players.find(player => player.id === playerId)).filter(Boolean);
+  const selected = room.players.find(player => player.id === picker.playerId);
+  const selectedIndex = Math.max(0, orderedPlayers.findIndex(player => player.id === picker.playerId));
+  const count = Math.max(1, orderedPlayers.length);
+  const selectedAngle = `${-(selectedIndex * 360 / count)}deg`;
+  return html`
+    <div class="starting-picker" role="status" aria-live="polite">
+      <div class="starting-wheel" style="--selected-angle:${selectedAngle}">
+        ${orderedPlayers.map((player, index) => html`
+          <div class="starting-wheel-item ${player.id === picker.playerId ? "selected" : ""}" style="--angle:${index * 360 / count}deg;--reverse-angle:${-(index * 360 / count)}deg;--player:${playerColor(player)}">
+            <span>${tokenIcons[player.token]}</span>
+          </div>
+        `).join("")}
+        <div class="starting-wheel-core">
+          <span style="background:${playerColor(selected)}">${selected ? tokenIcons[selected.token] : "?"}</span>
+        </div>
+      </div>
+      <div class="starting-result">
+        <p class="eyebrow">Người đi trước</p>
+        <h2>${escapeHtml(selected?.name || "")}</h2>
+        <p>Lượt kế tiếp đi theo chiều kim đồng hồ.</p>
+      </div>
+    </div>
+  `;
 }
 
 function arrangeHuds(players, youId) {
@@ -732,7 +782,7 @@ function renderTile(tile, room) {
       ${owner ? renderPropertyIcon(tile, owner, level) : ""}
       ${festivalTurns ? `<div class="festival-ribbon" title="Còn ${festivalTurns} vòng">Lễ hội</div>` : ""}
       <div class="players-on-tile">${players.map(player => html`
-        <div class="piece" title="${escapeHtml(player.name)}" style="background:${playerColor(player)}">${tokenIcons[player.token]}</div>
+        <div class="piece ${state.movingPieces[player.id] ? "moving" : ""}" title="${escapeHtml(player.name)}" style="background:${playerColor(player)}">${tokenIcons[player.token]}</div>
       `).join("")}</div>
     </div>
   `;
@@ -971,7 +1021,7 @@ function purchasePanelState(room, you, current) {
   if (tile.type === "land" && ownedByYou && (ownership?.level || 0) >= 4) {
     return null;
   }
-  if (tile.type === "land" && ownedByYou && (ownership?.level || 0) >= 3 && ownership?.hotelReady) {
+  if (tile.type === "land" && ownedByYou && (ownership?.level || 0) >= 3 && ownership?.hotelReady && canBuildLevelForPlayer(you, 4)) {
     return { tile, ownership, owner, ownedByYou, you, kind: "hotel" };
   }
   if (tile.type === "land" && (!ownership?.ownerId || ownedByYou)) {
@@ -1060,10 +1110,14 @@ function renderHotelUpgradeOption(tile, ownership, player) {
   `;
 }
 
+function canBuildLevelForPlayer(player, targetLevel) {
+  return targetLevel < 3 || (player?.laps || 0) >= 1;
+}
+
 function renderLandMainOptions(tile, ownership, player) {
   const level = ownership?.level || 0;
   if (!ownership?.ownerId) {
-    const options = [1, 2, 3].map(target => {
+    const options = [1, 2, 3].filter(target => canBuildLevelForPlayer(player, target)).map(target => {
       const label = ["", "Xây nhà nhỏ", "Xây nhà vừa", "Xây nhà lớn"][target];
       const cost = tile.price + buildCost(tile.price, 0, target);
       return renderPurchaseChoice(tile, { action: "build", level: target, label, cost }, player);
@@ -1077,7 +1131,7 @@ function renderLandMainOptions(tile, ownership, player) {
   }
   const options = [1, 2, 3, 4].map(target => {
     const label = ["", "Xây nhà nhỏ", "Xây nhà vừa", "Xây nhà lớn", "Xây khách sạn"][target];
-    const canBuild = target > level && (target < 4 || (level >= 3 && ownership?.hotelReady));
+    const canBuild = target > level && canBuildLevelForPlayer(player, target) && (target < 4 || (level >= 3 && ownership?.hotelReady));
     const cost = canBuild ? buildCost(tile.price, level, target) : 0;
     return renderPurchaseChoice(tile, { action: "build", level: target, label, cost, disabled: !canBuild }, player);
   });
